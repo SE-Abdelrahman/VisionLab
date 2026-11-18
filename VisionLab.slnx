@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="VisionLab/VisionLab.vcxproj" />
+  <Project Path="VisionLab/VisionLab.vcxproj" Id="49272398-6eac-4210-a2ee-70372f7bc16e" />
 </Solution>

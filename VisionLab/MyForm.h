@@ -4,7 +4,6 @@
 #include <opencv2/imgproc.hpp>
 #include <cmath>
 #include <algorithm>
-#include <msclr/marshal_cppstd.h>
 
 namespace VisionLab {
 
@@ -62,6 +61,12 @@ namespace VisionLab {
 		Button^ btnZoom;
 		Button^ btnSkew;
 
+		// أزرار الفلاتر المكانية (Spatial Filters)
+		Button^ btnTradFilter;
+		Button^ btnPyramidalFilter;
+		Button^ btnCircularFilter;
+		Button^ btnConeFilter;
+
 		// السلايدرز التفاعلية
 		TrackBar^ trkRotate;
 		Label^ lblRotateVal;
@@ -98,6 +103,29 @@ namespace VisionLab {
 			return bmp;
 		}
 
+		// تحويل System::Drawing::Bitmap إلى cv::Mat (آمن 100% مع كل المسارات)
+		cv::Mat BitmapToMat(Bitmap^ bmp)
+		{
+			Bitmap^ bmp24 = gcnew Bitmap(bmp->Width, bmp->Height, PixelFormat::Format24bppRgb);
+			Graphics^ g = Graphics::FromImage(bmp24);
+			g->DrawImage(bmp, 0, 0, bmp->Width, bmp->Height);
+			delete g;
+
+			cv::Mat mat(bmp24->Height, bmp24->Width, CV_8UC3);
+			BitmapData^ bmpData = bmp24->LockBits(
+				System::Drawing::Rectangle(0, 0, bmp24->Width, bmp24->Height),
+				ImageLockMode::ReadOnly, bmp24->PixelFormat);
+
+			for (int y = 0; y < mat.rows; y++) {
+				memcpy(mat.ptr(y),
+					(unsigned char*)bmpData->Scan0.ToPointer() + y * bmpData->Stride,
+					mat.cols * 3);
+			}
+			bmp24->UnlockBits(bmpData);
+			delete bmp24;
+			return mat;
+		}
+
 		void UpdateProcessedView()
 		{
 			if (!global_dst.empty()) {
@@ -128,7 +156,7 @@ namespace VisionLab {
 			Button^ btn = gcnew Button();
 			btn->Text = text;
 			btn->Location = Point(15, yPos);
-			btn->Size = System::Drawing::Size(215, 35);
+			btn->Size = System::Drawing::Size(205, 35);
 			btn->FlatStyle = FlatStyle::Flat;
 			btn->FlatAppearance->BorderSize = 0;
 			btn->BackColor = bgColor;
@@ -200,6 +228,7 @@ namespace VisionLab {
 			this->Controls->Add(sidePanel);
 
 			Color btnDark = Color::FromArgb(51, 65, 85);
+			Color btnFilterCol = Color::FromArgb(67, 56, 202); // Indigo accent للفلاتر
 			int y = 15;
 
 			sidePanel->Controls->Add(CreateSectionLabel(L"INTENSITY & SLICING", y)); y += 25;
@@ -213,12 +242,18 @@ namespace VisionLab {
 			btnHistEq = CreateStyledButton(L"Histogram Equalization", y, Color::FromArgb(14, 116, 144)); btnHistEq->Click += gcnew EventHandler(this, &MyForm::OnHistEqClick); sidePanel->Controls->Add(btnHistEq); y += 40;
 			btnShowHist = CreateStyledButton(L"Compare Histograms", y, Color::FromArgb(14, 116, 144)); btnShowHist->Click += gcnew EventHandler(this, &MyForm::OnShowHistClick); sidePanel->Controls->Add(btnShowHist); y += 48;
 
+			sidePanel->Controls->Add(CreateSectionLabel(L"SPATIAL SMOOTHING FILTERS", y)); y += 25;
+			btnTradFilter = CreateStyledButton(L"Traditional Filter (3×3)", y, btnFilterCol); btnTradFilter->Click += gcnew EventHandler(this, &MyForm::OnTradFilterClick); sidePanel->Controls->Add(btnTradFilter); y += 40;
+			btnPyramidalFilter = CreateStyledButton(L"Pyramidal Filter (5×5)", y, btnFilterCol); btnPyramidalFilter->Click += gcnew EventHandler(this, &MyForm::OnPyramidalFilterClick); sidePanel->Controls->Add(btnPyramidalFilter); y += 40;
+			btnCircularFilter = CreateStyledButton(L"Circular Filter (5×5)", y, btnFilterCol); btnCircularFilter->Click += gcnew EventHandler(this, &MyForm::OnCircularFilterClick); sidePanel->Controls->Add(btnCircularFilter); y += 40;
+			btnConeFilter = CreateStyledButton(L"Cone Filter (5×5)", y, btnFilterCol); btnConeFilter->Click += gcnew EventHandler(this, &MyForm::OnConeFilterClick); sidePanel->Controls->Add(btnConeFilter); y += 48;
+
 			sidePanel->Controls->Add(CreateSectionLabel(L"GEOMETRIC TRANSFORMS", y)); y += 25;
 			btnFlipX = CreateStyledButton(L"Flip Horizontal (X)", y, btnDark); btnFlipX->Click += gcnew EventHandler(this, &MyForm::OnFlipXClick); sidePanel->Controls->Add(btnFlipX); y += 40;
 			btnFlipY = CreateStyledButton(L"Flip Vertical (Y)", y, btnDark); btnFlipY->Click += gcnew EventHandler(this, &MyForm::OnFlipYClick); sidePanel->Controls->Add(btnFlipY); y += 40;
 			btnFlipBoth = CreateStyledButton(L"Flip Both Axes", y, btnDark); btnFlipBoth->Click += gcnew EventHandler(this, &MyForm::OnFlipBothClick); sidePanel->Controls->Add(btnFlipBoth); y += 40;
 			btnZoom = CreateStyledButton(L"Zoom 2x (Top-Left)", y, btnDark); btnZoom->Click += gcnew EventHandler(this, &MyForm::OnZoomClick); sidePanel->Controls->Add(btnZoom); y += 40;
-			btnSkew = CreateStyledButton(L"Skew / Shear", y, btnDark); btnSkew->Click += gcnew EventHandler(this, &MyForm::OnSkewClick); sidePanel->Controls->Add(btnSkew); y += 50;
+			btnSkew = CreateStyledButton(L"Skew / Shear", y, btnDark); btnSkew->Click += gcnew EventHandler(this, &MyForm::OnSkewClick); sidePanel->Controls->Add(btnSkew); y += 30;
 
 			// 3. مساحة عرض الصور
 			lblOrigTitle = gcnew Label();
@@ -376,8 +411,10 @@ namespace VisionLab {
 			ofd->Filter = L"Image Files|*.jpg;*.jpeg;*.png;*.bmp;*.tif";
 			if (ofd->ShowDialog() == System::Windows::Forms::DialogResult::OK)
 			{
-				std::string path = msclr::interop::marshal_as<std::string>(ofd->FileName);
-				global_src = cv::imread(path, cv::IMREAD_COLOR);
+				Bitmap^ loadedBmp = gcnew Bitmap(ofd->FileName);
+				global_src = BitmapToMat(loadedBmp);
+				delete loadedBmp;
+
 				if (global_src.empty()) return;
 
 				global_dst = global_src.clone();
@@ -410,8 +447,9 @@ namespace VisionLab {
 			sfd->Filter = L"PNG Image|*.png|JPEG Image|*.jpg";
 			if (sfd->ShowDialog() == System::Windows::Forms::DialogResult::OK)
 			{
-				std::string path = msclr::interop::marshal_as<std::string>(sfd->FileName);
-				cv::imwrite(path, global_dst);
+				Bitmap^ saveBmp = MatToBitmap(global_dst);
+				saveBmp->Save(sfd->FileName);
+				delete saveBmp;
 				MessageBox::Show(L"Image saved successfully!", L"VisionLab Pro", MessageBoxButtons::OK, MessageBoxIcon::Information);
 			}
 		}
@@ -472,7 +510,7 @@ namespace VisionLab {
 			UpdateProcessedView();
 		}
 
-		// --- أحداث الأزرار الجانبية ---
+		// --- أحداث Intensity & Histogram ---
 		void OnGrayClick(Object^ sender, EventArgs^ e)
 		{
 			if (global_src.empty()) return;
@@ -569,6 +607,74 @@ namespace VisionLab {
 			cv::imshow("2. Processed Histogram", h2);
 		}
 
+		// --- أحداث Spatial Smoothing Filters ---
+		void OnTradFilterClick(Object^ sender, EventArgs^ e)
+		{
+			if (global_src.empty()) return;
+			cv::Mat gray = GetGraySource();
+			float t_data[9] = {
+				1, 1, 1,
+				1, 1, 1,
+				1, 1, 1
+			};
+			cv::Mat kernel_T = cv::Mat(3, 3, CV_32F, t_data).clone() / 9.0f;
+			cv::filter2D(gray, global_dst, CV_8UC1, kernel_T);
+			lblInfo->Text = L"Filter Applied: Traditional Filter (3x3)  |  Kernel Sum Divisor = 9";
+			UpdateProcessedView();
+		}
+
+		void OnPyramidalFilterClick(Object^ sender, EventArgs^ e)
+		{
+			if (global_src.empty()) return;
+			cv::Mat gray = GetGraySource();
+			float p_data[25] = {
+				1, 2, 3, 2, 1,
+				2, 4, 6, 4, 2,
+				3, 6, 9, 6, 3,
+				2, 4, 6, 4, 2,
+				1, 2, 3, 2, 1
+			};
+			cv::Mat kernel_p = cv::Mat(5, 5, CV_32F, p_data).clone() / 81.0f;
+			cv::filter2D(gray, global_dst, CV_8UC1, kernel_p);
+			lblInfo->Text = L"Filter Applied: Pyramidal Filter (5x5)  |  Kernel Sum Divisor = 81";
+			UpdateProcessedView();
+		}
+
+		void OnCircularFilterClick(Object^ sender, EventArgs^ e)
+		{
+			if (global_src.empty()) return;
+			cv::Mat gray = GetGraySource();
+			float c_data[25] = {
+				0, 1, 1, 1, 0,
+				1, 1, 1, 1, 1,
+				1, 1, 1, 1, 1,
+				1, 1, 1, 1, 1,
+				0, 1, 1, 1, 0
+			};
+			cv::Mat kernel_c = cv::Mat(5, 5, CV_32F, c_data).clone() / 21.0f;
+			cv::filter2D(gray, global_dst, CV_8UC1, kernel_c);
+			lblInfo->Text = L"Filter Applied: Circular Filter (5x5)  |  Kernel Sum Divisor = 21";
+			UpdateProcessedView();
+		}
+
+		void OnConeFilterClick(Object^ sender, EventArgs^ e)
+		{
+			if (global_src.empty()) return;
+			cv::Mat gray = GetGraySource();
+			float co_data[25] = {
+				0, 0, 1, 0, 0,
+				0, 2, 2, 2, 0,
+				1, 2, 5, 2, 1,
+				0, 2, 2, 2, 0,
+				0, 0, 1, 0, 0
+			};
+			cv::Mat kernel_co = cv::Mat(5, 5, CV_32F, co_data).clone() / 25.0f;
+			cv::filter2D(gray, global_dst, CV_8UC1, kernel_co);
+			lblInfo->Text = L"Filter Applied: Cone Filter (5x5)  |  Kernel Sum Divisor = 25";
+			UpdateProcessedView();
+		}
+
+		// --- أحداث Geometric Transforms ---
 		void OnFlipXClick(Object^ sender, EventArgs^ e)
 		{
 			if (global_src.empty()) return;
